@@ -22,7 +22,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { materializeContainerJson } from './container-config.js';
-import { nativeCredentialEnvArgs } from './native-credential-proxy.js';
+import { nativeCredentialEnvArgs, nativeCredentialsEnabled } from './native-credential-proxy.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
@@ -491,14 +491,24 @@ async function buildContainerArgs(
   // the gateway, we don't spawn. The caller (router or host-sweep) catches
   // the throw, leaves the inbound message pending, and the next sweep tick
   // retries.
-  if (agentIdentifier) {
-    await onecli.ensureAgent({ name: agentGroup.name, identifier: agentIdentifier });
+  // Native-credential-proxy opt-out: when NANOCLAW_NATIVE_CREDENTIALS=true the
+  // Anthropic credential is injected into the container env directly (see the
+  // reach-in after the TZ line), so the OneCLI vault must be skipped entirely —
+  // both agent creation and the HTTPS_PROXY/cert injection that would otherwise
+  // route the container's API calls through the vault. Without this gate,
+  // ensureAgent() hits the (unconfigured) vault and aborts every spawn with 401.
+  if (!nativeCredentialsEnabled()) {
+    if (agentIdentifier) {
+      await onecli.ensureAgent({ name: agentGroup.name, identifier: agentIdentifier });
+    }
+    const onecliApplied = await onecli.applyContainerConfig(args, { addHostMapping: false, agent: agentIdentifier });
+    if (!onecliApplied) {
+      throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials');
+    }
+    log.info('OneCLI gateway applied', { containerName });
+  } else {
+    log.info('OneCLI gateway skipped — native credential proxy active', { containerName });
   }
-  const onecliApplied = await onecli.applyContainerConfig(args, { addHostMapping: false, agent: agentIdentifier });
-  if (!onecliApplied) {
-    throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials');
-  }
-  log.info('OneCLI gateway applied', { containerName });
 
   // Override entrypoint: run v2 entry point directly via Bun (no tsc, no stdin).
   args.push('--entrypoint', 'bash');
