@@ -39,9 +39,18 @@ export const NATIVE_CREDENTIAL_VARS = [
   'ANTHROPIC_BASE_URL',
 ] as const;
 
-/** Is the native `.env` credential opt-out enabled? */
+/**
+ * Is the native `.env` credential opt-out enabled?
+ *
+ * The flag normally lives in `.env`, which the host does NOT load into
+ * `process.env` (the credential reader below relies on the same fact). So we
+ * check `process.env` first — allowing an explicit env override — then fall
+ * back to reading the flag straight from `.env` via core's `readEnvFile`,
+ * mirroring how the credentials themselves are resolved.
+ */
 export function nativeCredentialsEnabled(): boolean {
-  return process.env[NATIVE_CREDENTIALS_FLAG] === 'true';
+  if (process.env[NATIVE_CREDENTIALS_FLAG] === 'true') return true;
+  return readEnvFile([NATIVE_CREDENTIALS_FLAG])[NATIVE_CREDENTIALS_FLAG] === 'true';
 }
 
 /**
