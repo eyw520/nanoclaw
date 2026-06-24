@@ -456,6 +456,15 @@ async function buildContainerArgs(
     }
   }
 
+  // Per-agent-group env vars (e.g. GH_TOKEN) — for values the OneCLI gateway
+  // can't inject (git basic-auth, stdio-MCP startup env). Set via
+  // `ncl groups config set-env`; never written to container.json.
+  if (containerConfig.envVars) {
+    for (const [key, value] of Object.entries(containerConfig.envVars)) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
   // Egress lockdown when enabled — throws if it can't be established, aborting
   // the spawn rather than running with open egress. Otherwise the host gateway.
   if (ensureEgressNetwork()) {

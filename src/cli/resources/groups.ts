@@ -301,6 +301,51 @@ registerResource({
         return { removed: name };
       },
     },
+    'config set-env': {
+      access: 'approval',
+      description:
+        'Set a container environment variable for a group (injected via -e at spawn; for values the ' +
+        'OneCLI gateway can\'t inject, e.g. GH_TOKEN). Requires `ncl groups restart` to take effect. ' +
+        'Use --id <group-id> --name <VAR> --value <value>.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const name = args.name as string;
+        if (!name) throw new Error('--name is required');
+        const value = args.value as string | undefined;
+        if (value === undefined) throw new Error('--value is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+
+        const env = JSON.parse(row.env_vars) as Record<string, string>;
+        env[name] = value;
+        updateContainerConfigJson(id, 'env_vars', env);
+
+        return { set: name }; // value intentionally not echoed
+      },
+    },
+    'config unset-env': {
+      access: 'approval',
+      description:
+        'Remove a container environment variable from a group. Requires `ncl groups restart`. Use --id <group-id> --name <VAR>.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const name = args.name as string;
+        if (!name) throw new Error('--name is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+
+        const env = JSON.parse(row.env_vars) as Record<string, string>;
+        if (!(name in env)) throw new Error(`Env var "${name}" not found`);
+        delete env[name];
+        updateContainerConfigJson(id, 'env_vars', env);
+
+        return { unset: name };
+      },
+    },
     'config add-package': {
       access: 'approval',
       description:

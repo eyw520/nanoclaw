@@ -35,6 +35,8 @@ export interface ContainerConfig {
   packages: { apt: string[]; npm: string[] };
   imageTag?: string;
   additionalMounts: AdditionalMountConfig[];
+  /** Env vars injected via `-e` at spawn (e.g. GH_TOKEN). NOT written to container.json. */
+  envVars?: Record<string, string>;
   skills: string[] | 'all';
   provider?: string;
   groupName?: string;
@@ -55,6 +57,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     },
     imageTag: row.image_tag ?? undefined,
     additionalMounts: JSON.parse(row.additional_mounts) as AdditionalMountConfig[],
+    envVars: JSON.parse(row.env_vars) as Record<string, string>,
     skills: JSON.parse(row.skills) as string[] | 'all',
     provider: row.provider ?? undefined,
     groupName: group.name,
@@ -83,7 +86,11 @@ export function materializeContainerJson(agentGroupId: string): ContainerConfig 
   const p = path.join(GROUPS_DIR, group.folder, 'container.json');
   const dir = path.dirname(p);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(config, null, 2) + '\n');
+  // envVars may hold secrets (e.g. GH_TOKEN) — they're injected via `-e` at
+  // spawn from the in-memory config below; never persist them to container.json
+  // (it lives in the group folder on disk).
+  const { envVars: _envVars, ...jsonConfig } = config;
+  fs.writeFileSync(p, JSON.stringify(jsonConfig, null, 2) + '\n');
 
   return config;
 }
