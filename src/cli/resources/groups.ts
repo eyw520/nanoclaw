@@ -319,7 +319,7 @@ registerResource({
       access: 'approval',
       description:
         'Set a container environment variable for a group (injected via -e at spawn; for values the ' +
-        'OneCLI gateway can\'t inject, e.g. GH_TOKEN). Requires `ncl groups restart` to take effect. ' +
+        "OneCLI gateway can't inject, e.g. GH_TOKEN). Requires `ncl groups restart` to take effect. " +
         'Use --id <group-id> --name <VAR> --value <value>.',
       handler: async (args) => {
         const id = args.id as string;
