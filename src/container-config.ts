@@ -16,12 +16,17 @@ import { getContainerConfig } from './db/container-configs.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import type { AgentGroup, ContainerConfigRow } from './types.js';
 
-export interface McpServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
-  instructions?: string;
-}
+/**
+ * MCP server config — a discriminated union over transport.
+ *   stdio (default): a process the SDK spawns (command/args/env).
+ *   http | sse: a remote server reached by URL (e.g. Supabase's hosted MCP).
+ *     Auth header can be inline (`headers`) or — preferably — injected by the
+ *     OneCLI gateway via a host-pattern secret so the token isn't stored here.
+ * Passed straight through to the Claude Agent SDK by the agent-runner.
+ */
+export type McpServerConfig =
+  | { type?: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; instructions?: string }
+  | { type: 'http' | 'sse'; url: string; headers?: Record<string, string>; instructions?: string };
 
 export interface AdditionalMountConfig {
   hostPath: string;

@@ -257,27 +257,41 @@ registerResource({
       access: 'approval',
       description:
         'Add an MCP server to a group. Requires `ncl groups restart` to take effect. ' +
-        'Use --id <group-id> --name <server-name> --command <cmd> [--args <json-array>] [--env <json-object>].',
+        'stdio: --id <group-id> --name <server-name> --command <cmd> [--args <json-array>] [--env <json-object>]. ' +
+        'http/sse: --id <group-id> --name <server-name> --type http|sse --url <url> [--headers <json-object>].',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
         const name = args.name as string;
         if (!name) throw new Error('--name is required');
-        const command = args.command as string;
-        if (!command) throw new Error('--command is required');
+        const type = (args.type as string) || 'stdio';
 
         const row = getContainerConfig(id);
         if (!row) throw new Error(`No container config for group: ${id}`);
 
         const servers = JSON.parse(row.mcp_servers) as Record<string, McpServerConfig>;
-        servers[name] = {
-          command,
-          args: args.args ? (JSON.parse(args.args as string) as string[]) : [],
-          env: args.env ? (JSON.parse(args.env as string) as Record<string, string>) : {},
-        };
+        if (type === 'http' || type === 'sse') {
+          const url = args.url as string;
+          if (!url) throw new Error('--url is required for http/sse MCP servers');
+          servers[name] = {
+            type,
+            url,
+            headers: args.headers ? (JSON.parse(args.headers as string) as Record<string, string>) : undefined,
+          };
+        } else if (type === 'stdio') {
+          const command = args.command as string;
+          if (!command) throw new Error('--command is required for stdio MCP servers');
+          servers[name] = {
+            command,
+            args: args.args ? (JSON.parse(args.args as string) as string[]) : [],
+            env: args.env ? (JSON.parse(args.env as string) as Record<string, string>) : {},
+          };
+        } else {
+          throw new Error(`Invalid --type: ${type} (expected 'stdio', 'http', or 'sse')`);
+        }
         updateContainerConfigJson(id, 'mcp_servers', servers);
 
-        return { added: name, servers };
+        return { added: name, type }; // config not echoed — may carry an auth header
       },
     },
     'config remove-mcp-server': {
