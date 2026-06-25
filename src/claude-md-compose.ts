@@ -123,6 +123,13 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
 
   // Composed entry — imports only.
   const imports = ['@./.claude-shared.md'];
+  // Operator persona (read-only AGENTS.md), if present — imported right after the
+  // base so the agent's identity/workflow is always in context, not left to the
+  // agent to choose to read. Installed by `SETUP.sh persona`; the agent's own
+  // memory stays in CLAUDE.local.md (auto-loaded separately, not imported here).
+  if (fs.existsSync(path.join(groupDir, 'AGENTS.md'))) {
+    imports.push('@./AGENTS.md');
+  }
   for (const name of [...desired.keys()].sort()) {
     imports.push(`@./.claude-fragments/${name}`);
   }
