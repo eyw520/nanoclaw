@@ -4,7 +4,7 @@
  * Writes to outbound.db (container-owned).
  * The host polls this DB (read-only) for undelivered messages.
  */
-import { getConfig } from '../config.js';
+import { loadConfig } from '../config.js';
 import { getInboundDb, getOutboundDb } from './connection.js';
 
 /**
@@ -17,12 +17,12 @@ import { getInboundDb, getOutboundDb } from './connection.js';
  * ids (e.g. `sys-…`) pass through untouched.
  */
 function stripAgentNamespace(id: string): string {
-  let agentGroupId = '';
-  try {
-    agentGroupId = getConfig().agentGroupId;
-  } catch {
-    /* config not loaded (e.g. unit tests) — leave id as-is */
-  }
+  // loadConfig() (not getConfig()): add_reaction / edit_message run in the
+  // MCP-tools process, which never calls loadConfig() at startup — getConfig()
+  // would throw there and we'd silently skip the strip. loadConfig() lazily
+  // reads container.json (cached, never throws); falls back to an empty
+  // agentGroupId off-container (e.g. unit tests), which leaves the id untouched.
+  const agentGroupId = loadConfig().agentGroupId;
   const suffix = agentGroupId ? `:${agentGroupId}` : '';
   return suffix && id.endsWith(suffix) ? id.slice(0, -suffix.length) : id;
 }
