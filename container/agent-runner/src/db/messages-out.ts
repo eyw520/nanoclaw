@@ -4,7 +4,28 @@
  * Writes to outbound.db (container-owned).
  * The host polls this DB (read-only) for undelivered messages.
  */
+import { getConfig } from '../config.js';
 import { getInboundDb, getOutboundDb } from './connection.js';
+
+/**
+ * Reverse the host's `messageIdForAgent` (`${platformId}:${agentGroupId}` in
+ * router.ts): inbound ids are namespaced by agent group to keep messages_in.id
+ * unique under fan-out, but edit/reaction targeting needs the RAW platform
+ * message id (the Slack ts, Telegram `chatId:msgId`, …). Passing the namespaced
+ * id straight to the platform yields `message_not_found`. We strip only the
+ * exact trailing `:${agentGroupId}`, so Telegram's own colon and non-namespaced
+ * ids (e.g. `sys-…`) pass through untouched.
+ */
+function stripAgentNamespace(id: string): string {
+  let agentGroupId = '';
+  try {
+    agentGroupId = getConfig().agentGroupId;
+  } catch {
+    /* config not loaded (e.g. unit tests) — leave id as-is */
+  }
+  const suffix = agentGroupId ? `:${agentGroupId}` : '';
+  return suffix && id.endsWith(suffix) ? id.slice(0, -suffix.length) : id;
+}
 
 export interface MessageOutRow {
   id: string;
@@ -90,11 +111,13 @@ export function writeMessageOut(msg: WriteMessageOut): number {
 export function getMessageIdBySeq(seq: number): string | null {
   const inbound = getInboundDb();
 
-  // Inbound messages: ID is already the platform message ID
+  // Inbound messages: the stored id is the platform message ID namespaced by
+  // agent group (router.ts messageIdForAgent) — strip that back off so the
+  // platform sees the raw message id it can target.
   const inRow = inbound.prepare('SELECT id FROM messages_in WHERE seq = ?').get(seq) as
     | { id: string }
     | undefined;
-  if (inRow) return inRow.id;
+  if (inRow) return stripAgentNamespace(inRow.id);
 
   // Outbound messages: look up platform message ID from delivered table
   const outRow = getOutboundDb().prepare('SELECT id FROM messages_out WHERE seq = ?').get(seq) as
