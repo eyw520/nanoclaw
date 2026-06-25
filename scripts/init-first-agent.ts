@@ -26,6 +26,9 @@
  *     [--agent-name "Andy"] \
  *     [--welcome "System instruction: ..."] \
  *     [--role owner|admin|member]    # default: owner
+ *     [--instance <name>]            # bind to a NAMED channel instance (a 2nd
+ *                                    # bot of the same platform on one box);
+ *                                    # default = the platform's default instance
  *
  * For direct-addressable channels (telegram, whatsapp, etc.), --platform-id
  * is typically the same as the handle in --user-id, with the channel prefix.
@@ -62,6 +65,9 @@ interface Args {
   agentName: string;
   welcome: string;
   role: Role;
+  /** Named channel instance to bind to (a 2nd bot of the same platform on one
+   *  box). Undefined = the platform's default instance (= channelType). */
+  instance?: string;
 }
 
 const DEFAULT_WELCOME =
@@ -111,6 +117,10 @@ function parseArgs(argv: string[]): Args {
         i++;
         break;
       }
+      case '--instance':
+        out.instance = val;
+        i++;
+        break;
     }
   }
 
@@ -272,24 +282,30 @@ async function main(): Promise<void> {
     added_at: now,
   });
 
-  // 3. DM messaging group.
+  // 3. DM messaging group. When --instance is set, this binds to that NAMED
+  //    channel instance (a distinct bot of the same platform on this box): the
+  //    lookup is exact, and the row is stamped with the instance so the same
+  //    operator handle on the same platform doesn't collide with the default
+  //    instance's wiring. Absent --instance, createMessagingGroup coalesces
+  //    instance to channel_type (the default instance) — unchanged behavior.
   const platformId = namespacedPlatformId(args.channel, args.platformId);
-  let dmMg = getMessagingGroupByPlatform(args.channel, platformId);
+  let dmMg = getMessagingGroupByPlatform(args.channel, platformId, args.instance);
   if (!dmMg) {
     const mgId = generateId('mg');
     createMessagingGroup({
       id: mgId,
       channel_type: args.channel,
       platform_id: platformId,
+      instance: args.instance,
       name: args.displayName,
       is_group: 0,
       unknown_sender_policy: 'strict',
       created_at: now,
     });
-    dmMg = getMessagingGroupByPlatform(args.channel, platformId)!;
-    console.log(`Created messaging group: ${dmMg.id} (${platformId})`);
+    dmMg = getMessagingGroupByPlatform(args.channel, platformId, args.instance)!;
+    console.log(`Created messaging group: ${dmMg.id} (${platformId}${args.instance ? ` @${args.instance}` : ''})`);
   } else {
-    console.log(`Reusing messaging group: ${dmMg.id} (${platformId})`);
+    console.log(`Reusing messaging group: ${dmMg.id} (${platformId}${args.instance ? ` @${args.instance}` : ''})`);
   }
 
   // 4. Wire DM messaging group to the agent.
@@ -368,6 +384,10 @@ async function sendWelcomeViaCliSocket(
           sender: identity.sender,
           to: {
             channelType: dmMg.channel_type,
+            // Carry the named instance so the router resolves THIS messaging
+            // group (exact-key) rather than auto-creating a default-instance row
+            // and dropping the welcome. Omitted/undefined → default instance.
+            instance: dmMg.instance,
             platformId: dmMg.platform_id,
             threadId: dmMg.platform_id,
           },

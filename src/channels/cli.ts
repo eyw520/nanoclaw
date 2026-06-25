@@ -201,8 +201,14 @@ function createAdapter(): ChannelAdapter {
       // Routed message — admin transport. Build a full InboundEvent targeting
       // `to`'s channel/platform, and let `reply_to` (if any) redirect replies.
       // Does NOT claim the chat slot, so an active terminal chat isn't evicted.
+      // An explicit `to.instance` (e.g. init-first-agent's welcome to a named
+      // channel instance) is honored so the router resolves THAT instance's
+      // messaging group exact-key, not the default; absent → default instance.
+      const toRaw = payload.to as Record<string, unknown> | undefined;
+      const toInstance = typeof toRaw?.instance === 'string' ? toRaw.instance : undefined;
       const event: InboundEvent = {
         channelType: to.channelType,
+        ...(toInstance ? { instance: toInstance } : {}),
         platformId: to.platformId,
         threadId: to.threadId,
         message: {
