@@ -198,7 +198,15 @@ async function main(): Promise<void> {
   // an admin grant is scoped to that group. See step 2b.
 
   // 2. Agent group + filesystem.
-  const folder = `dm-with-${normalizeName(args.displayName)}`;
+  // The folder IS the agent group's identity (getAgentGroupByFolder reuses an
+  // existing one). A named channel instance (--instance) is a distinct bot on
+  // the same box (a co-tenant): it must get its OWN agent group even when the
+  // owner's display name matches the host's, or it would silently collapse into
+  // the host's `dm-with-<owner>` group (shared workspace/memory/persona). So we
+  // suffix the instance for instanced wirings; the default instance (no flag)
+  // keeps the bare `dm-with-<owner>` folder, unchanged.
+  const base = `dm-with-${normalizeName(args.displayName)}`;
+  const folder = args.instance ? `${base}--${normalizeName(args.instance)}` : base;
   const pickedProvider = process.env.NANOCLAW_PICKED_PROVIDER?.trim().toLowerCase();
   let ag: AgentGroup | undefined = getAgentGroupByFolder(folder);
   if (!ag) {
