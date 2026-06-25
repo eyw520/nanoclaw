@@ -24,6 +24,7 @@ import { registerWebhookAdapter } from '../webhook-server.js';
 import { getAskQuestionRender } from '../db/sessions.js';
 import { normalizeOptions, type NormalizedOption } from './ask-question.js';
 import type { ChannelAdapter, ChannelSetup, InboundMessage } from './adapter.js';
+import { DM_THREAD_PER_MESSAGE } from '../config.js';
 
 /** Adapter with optional gateway support (e.g., Discord). */
 interface GatewayAdapter extends Adapter {
@@ -270,13 +271,22 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       // is_group=0 short-circuit.
       chat.onDirectMessage(async (thread, message) => {
         const channelId = adapter.channelIdFromThreadId(thread.id);
+        // A top-level DM has no thread suffix (thread.id === "<channelId>:"); a
+        // message already inside a thread keeps its real thread id (continuity).
+        // When DM_THREAD_PER_MESSAGE is on, synthesize a per-message thread root
+        // from the message id so each new top-level message becomes its own
+        // session and the reply lands in a fresh thread.
+        let threadId = thread.id;
+        if (DM_THREAD_PER_MESSAGE && thread.id === `${channelId}:`) {
+          threadId = `${channelId}:${message.id}`;
+        }
         log.info('Inbound DM received', {
           adapter: adapter.name,
           channelId,
           sender: (message.author as any)?.fullName ?? (message.author as any)?.userId ?? 'unknown',
-          threadId: thread.id,
+          threadId,
         });
-        await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, true, false));
+        await setupConfig.onInbound(channelId, threadId, await messageToInbound(message, true, false));
       });
 
       // Plain messages in unsubscribed threads.

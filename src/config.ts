@@ -6,11 +6,24 @@ import { getContainerImageBase, getDefaultContainerImage, getInstallSlug } from 
 import { isValidTimezone } from './timezone.js';
 
 // Read config values from .env (falls back to process.env).
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER', 'ONECLI_URL', 'ONECLI_API_KEY', 'TZ']);
+const envConfig = readEnvFile([
+  'ASSISTANT_NAME',
+  'ASSISTANT_HAS_OWN_NUMBER',
+  'ONECLI_URL',
+  'ONECLI_API_KEY',
+  'TZ',
+  'NANOCLAW_DM_THREAD_PER_MESSAGE',
+]);
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER || envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
+
+// Per-box toggle: treat each top-level DM message as its own thread/session, so
+// a task-oriented agent (e.g. a coding bot) gets one isolated session per
+// message. Off by default — conversational DMs keep single-session continuity.
+export const DM_THREAD_PER_MESSAGE =
+  (process.env.NANOCLAW_DM_THREAD_PER_MESSAGE || envConfig.NANOCLAW_DM_THREAD_PER_MESSAGE) === 'true';
 
 // Absolute paths needed for container mounts
 const PROJECT_ROOT = process.cwd();
