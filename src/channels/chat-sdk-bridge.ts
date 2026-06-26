@@ -424,7 +424,16 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       }
 
       if (content.operation === 'reaction' && content.messageId && content.emoji) {
-        await adapter.addReaction(tid, content.messageId as string, content.emoji as string);
+        // Reactions are idempotent: if the emoji is already on the message
+        // (e.g. attempt 1 applied it server-side but the client saw an error and
+        // the delivery retried), the platform returns "already_reacted". Treat
+        // that as success so a succeeded reaction isn't logged as a permanent
+        // delivery failure and the retry loop ends cleanly.
+        try {
+          await adapter.addReaction(tid, content.messageId as string, content.emoji as string);
+        } catch (err) {
+          if (!/already_reacted/i.test(err instanceof Error ? err.message : String(err))) throw err;
+        }
         return;
       }
 

@@ -13,6 +13,7 @@ const envConfig = readEnvFile([
   'ONECLI_API_KEY',
   'TZ',
   'NANOCLAW_DM_THREAD_PER_MESSAGE',
+  'CONTAINER_CEILING_MS',
 ]);
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -50,6 +51,16 @@ export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
 export const ONECLI_API_KEY = process.env.ONECLI_API_KEY || envConfig.ONECLI_API_KEY;
 export const MAX_MESSAGES_PER_PROMPT = Math.max(1, parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10);
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
+// Absolute idle ceiling for a running container (host-sweep). MUST read through
+// envConfig like the rest of this file — .env is parsed into envConfig, NOT
+// injected into process.env, so a process.env-only read silently falls back to
+// the default. Coding/orchestrator bots run long blocking subprocesses (a nested
+// `claude -p` build that doesn't touch the heartbeat) and get reaped mid-task at
+// 30min; bump via CONTAINER_CEILING_MS in .env. Default 30min.
+export const CONTAINER_CEILING_MS = parseInt(
+  process.env.CONTAINER_CEILING_MS || envConfig.CONTAINER_CEILING_MS || String(30 * 60 * 1000),
+  10,
+);
 export const MAX_CONCURRENT_CONTAINERS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5);
 // Per-container resource caps, passed through to `docker run`. Default empty =
 // no flag added = today's unbounded behavior (don't OOM existing OSS workloads).
