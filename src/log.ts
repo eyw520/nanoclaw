@@ -31,12 +31,11 @@ function formatData(data: Record<string, unknown>): string {
 }
 
 function ts(): string {
-  const d = new Date();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  const ms = String(d.getMilliseconds()).padStart(3, '0');
-  return `${hh}:${mm}:${ss}.${ms}`;
+  // Full UTC ISO (date + time + Z). Was local HH:MM:SS with no date, which made
+  // cross-source correlation (logs vs journal vs session DBs vs Slack) error-prone
+  // and broke any math that spans midnight. UTC ISO is unambiguous, sortable, and
+  // parses directly with `date -d`.
+  return new Date().toISOString();
 }
 
 function emit(level: Level, msg: string, data?: Record<string, unknown>): void {
