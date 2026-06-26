@@ -54,6 +54,79 @@ import type { AgentGroup, Session } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 
+// ── Per-session container logs ────────────────────────────────────────────────
+// Containers run with `--rm`, so their stdout/stderr (agent-runner boot, MCP
+// startup, poll-loop results, errors) normally vanish on exit — the single
+// biggest blind spot when auditing what an agent actually did. Persist them to
+// the data volume, REDACTING token-shaped secrets first (the stream can carry
+// vault tokens, gateway proxy creds, etc.). Size-capped per file + age-pruned.
+const CONTAINER_LOGS_DIR = path.join(path.dirname(DATA_DIR), 'logs', 'containers');
+const CONTAINER_LOG_MAX_BYTES = 10 * 1024 * 1024; // 10MB/session
+const CONTAINER_LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // prune after 7 days
+const SECRET_PATTERNS: RegExp[] = [
+  /xox[abprs]-[A-Za-z0-9-]+/g, // Slack tokens
+  /gh[posu]_[A-Za-z0-9]{20,}/g, // GitHub tokens
+  /sk-ant-[A-Za-z0-9_-]{20,}/g, // Anthropic keys
+  /\b(?:aoc|oc)_[A-Za-z0-9]{20,}/g, // OneCLI proxy/api tokens
+  /(authorization|bearer|token|secret|password|api[_-]?key)(["'=:\s]+)[A-Za-z0-9._\-+/]{12,}/gi,
+];
+function redactSecrets(s: string): string {
+  let out = s;
+  for (const re of SECRET_PATTERNS) {
+    out = out.replace(re, (m, p1, p2) => (p2 ? `${p1}${p2}<redacted>` : '<redacted>'));
+  }
+  return out;
+}
+function pruneOldContainerLogs(): void {
+  try {
+    const now = Date.now();
+    for (const f of fs.readdirSync(CONTAINER_LOGS_DIR)) {
+      const p = path.join(CONTAINER_LOGS_DIR, f);
+      try {
+        if (now - fs.statSync(p).mtimeMs > CONTAINER_LOG_MAX_AGE_MS) fs.rmSync(p, { force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* dir may not exist yet */
+  }
+}
+/** Open a redacting, size-capped log sink for a session's container output. */
+function openContainerLog(sessionId: string): { write: (line: string) => void; close: () => void } | null {
+  try {
+    fs.mkdirSync(CONTAINER_LOGS_DIR, { recursive: true });
+    pruneOldContainerLogs();
+    const stream = fs.createWriteStream(path.join(CONTAINER_LOGS_DIR, `${sessionId}.log`), { flags: 'a' });
+    let bytes = 0;
+    let capped = false;
+    stream.write(`\n==== container spawn ${new Date().toISOString()} ====\n`);
+    return {
+      write(line: string) {
+        if (capped || !line) return;
+        const out = redactSecrets(line) + '\n';
+        bytes += out.length;
+        if (bytes > CONTAINER_LOG_MAX_BYTES) {
+          capped = true;
+          stream.write('==== [container log size cap reached — further output dropped] ====\n');
+          return;
+        }
+        stream.write(out);
+      },
+      close() {
+        try {
+          stream.end();
+        } catch {
+          /* already closed */
+        }
+      },
+    };
+  } catch (err) {
+    log.warn('container log sink open failed', { sessionId, err });
+    return null;
+  }
+}
+
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
 
@@ -171,6 +244,11 @@ async function spawnContainer(session: Session): Promise<void> {
   activeContainers.set(session.id, { process: container, containerName });
   markContainerRunning(session.id);
 
+  // Persist the container's full output (boot, MCP startup, poll-loop results,
+  // errors) to the data volume — otherwise --rm loses it on exit. Redacted +
+  // size-capped. Best-effort: a null sink (open failure) just skips persistence.
+  const containerLog = openContainerLog(session.id);
+
   // Log stderr. A container that dies at boot (unknown provider, missing
   // binary, bad config) explains itself only here — and debug is below the
   // default log level — so keep a tail to surface on a non-zero exit.
@@ -181,11 +259,15 @@ async function spawnContainer(session: Session): Promise<void> {
       log.debug(line, { container: agentGroup.folder });
       stderrTail.push(line);
       if (stderrTail.length > 10) stderrTail.shift();
+      containerLog?.write(`[err] ${line}`);
     }
   });
 
-  // stdout is unused in v2 (all IO is via session DB)
-  container.stdout?.on('data', () => {});
+  // stdout is not an IO channel in v2 (all IO is via the session DB), but it
+  // carries the agent-runner's diagnostics — persist it for auditing.
+  container.stdout?.on('data', (data) => {
+    for (const line of data.toString().split('\n')) containerLog?.write(line);
+  });
 
   // No host-side idle timeout. Stale/stuck detection is driven by the host
   // sweep reading heartbeat mtime + processing_ack claim age + container_state
@@ -196,6 +278,8 @@ async function spawnContainer(session: Session): Promise<void> {
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
+    containerLog?.write(`==== container exited (code=${code}) ====`);
+    containerLog?.close();
     // code null = killed by signal (normal shutdown path), not a boot failure.
     if (code !== 0 && code !== null && stderrTail.length > 0) {
       log.warn('Container exited non-zero', { sessionId: session.id, code, containerName, stderrTail });
@@ -208,6 +292,7 @@ async function spawnContainer(session: Session): Promise<void> {
     activeContainers.delete(session.id);
     markContainerStopped(session.id);
     stopTypingRefresh(session.id);
+    containerLog?.close();
     log.error('Container spawn error', { sessionId: session.id, err });
   });
 }
