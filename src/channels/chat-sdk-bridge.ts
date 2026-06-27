@@ -519,8 +519,25 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         }
 
         const card = Card({ title, children: cardChildren });
-        const result = await adapter.postMessage(tid, { card, fallbackText });
-        return result?.id;
+        try {
+          const result = await adapter.postMessage(tid, { card, fallbackText });
+          return result?.id;
+        } catch (err) {
+          // A single malformed Block Kit element (e.g. a bad rich_text `url`) makes
+          // Slack reject the ENTIRE card (invalid_blocks) and silently drop the
+          // message. The card is cosmetic; the content is not — so fall back to plain
+          // markdown, which the adapter sends as `markdown_text` (a string with no
+          // Block Kit schema to violate) so the message still lands. No fallback text
+          // to send → re-throw so the failure surfaces rather than vanishing.
+          const fb = fallbackText || title;
+          log.warn('send_card delivery failed — falling back to plain markdown', {
+            err,
+            hadFallback: !!fb,
+          });
+          if (!fb) throw err;
+          const result = await adapter.postMessage(tid, { markdown: fb });
+          return result?.id;
+        }
       }
 
       // Normal message
