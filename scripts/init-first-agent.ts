@@ -142,6 +142,7 @@ function parseArgs(argv: string[]): Args {
     agentName: out.agentName?.trim() || out.displayName!,
     welcome: out.welcome?.trim() || DEFAULT_WELCOME,
     role: out.role ?? DEFAULT_ROLE,
+    instance: out.instance?.trim() || undefined,
   };
 }
 
