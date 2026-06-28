@@ -454,7 +454,15 @@ export class ClaudeProvider implements AgentProvider {
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
           const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
           const detail = meta?.pre_tokens ? ` (${meta.pre_tokens.toLocaleString()} tokens compacted)` : '';
-          yield { type: 'result', text: `Context compacted${detail}.` };
+          // A compaction is a mid-stream SYSTEM event, not the agent's answer.
+          // Yielding it as `result` made the poll-loop treat it as the turn output:
+          // sent=0 → a false "nothing was sent" warning + a spurious re-wrap nudge
+          // (an extra round-trip that confuses the agent — "your response wasn't
+          // delivered" when it was only a compaction), and could end the turn before
+          // the real reply (the swallowed-turn / silent-tick bug). The SDK
+          // auto-compacts and CONTINUES, so the agent's real `result` follows; surface
+          // the boundary as progress and let that real result flow. (Mirrors task_notification.)
+          yield { type: 'progress', message: `Context compacted${detail}` };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
           const tn = message as { summary?: string };
           yield { type: 'progress', message: tn.summary || 'Task notification' };
