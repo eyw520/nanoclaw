@@ -216,11 +216,27 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     throw new Error(`agent-to-agent message ${msg.id} is missing a target agent group id`);
   }
   const isSelf = targetAgentGroupId === sourceAgentGroupId;
+  // Target gone? A Builder hand-off commonly races the harvester
+  // (harvest-builders.sh `ncl groups delete`s idle builders, cascading away both
+  // the group row AND the agent_destinations row). When the target group no
+  // longer exists the message is simply undeliverable — the recipient is gone —
+  // so DROP it quietly: `return` lets the delivery loop mark it delivered (no
+  // retry, no dead-letter ERROR). Checked BEFORE the destination ACL so a
+  // harvested target can't masquerade as an "unauthorized" security event (the
+  // cascade removes the destination row too, which would otherwise throw first).
+  if (!getAgentGroup(targetAgentGroupId)) {
+    log.info('a2a target agent group gone (harvested?) — dropping message', {
+      from: sourceAgentGroupId,
+      to: targetAgentGroupId,
+      msgId: msg.id,
+    });
+    return;
+  }
+  // The target EXISTS but the source has no destination to it — a real
+  // authorization failure (misconfig or a genuinely unauthorized send). Throw
+  // so it surfaces, unlike the benign harvested-target case above.
   if (!isSelf && !hasDestination(sourceAgentGroupId, 'agent', targetAgentGroupId)) {
     throw new Error(`unauthorized agent-to-agent: ${sourceAgentGroupId} has no destination for ${targetAgentGroupId}`);
-  }
-  if (!getAgentGroup(targetAgentGroupId)) {
-    throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
   }
 
   // Gated edge: hold the message and return (not throw) so the delivery loop

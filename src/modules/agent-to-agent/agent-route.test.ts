@@ -299,6 +299,41 @@ describe('routeAgentMessage return-path', () => {
     expect(s2Rows).toHaveLength(1);
   });
 
+  it('harvested target: drops quietly (no throw) when the target group is gone', async () => {
+    // Simulate a Builder hand-off racing the harvester: the target group was
+    // `ncl groups delete`d — group row AND its agent_destinations row both
+    // cascaded away. routeAgentMessage must resolve, not throw — a throw would
+    // dead-letter the hand-off as a spurious "unauthorized" ERROR.
+    await expect(
+      routeAgentMessage(
+        {
+          id: 'msg-to-harvested',
+          platform_id: 'ag-HARVESTED',
+          content: JSON.stringify({ text: 'report' }),
+          in_reply_to: null,
+        },
+        S1,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('authz preserved: throws unauthorized when the target group EXISTS but has no destination', async () => {
+    // A group that exists but A has no destination to — a real authorization
+    // failure, distinct from the benign harvested-target case above.
+    createAgentGroup({ id: 'ag-NOACL', name: 'NoAcl', folder: 'noacl', agent_provider: null, created_at: now() });
+    await expect(
+      routeAgentMessage(
+        {
+          id: 'msg-to-noacl',
+          platform_id: 'ag-NOACL',
+          content: JSON.stringify({ text: 'x' }),
+          in_reply_to: null,
+        },
+        S1,
+      ),
+    ).rejects.toThrow(/unauthorized agent-to-agent/);
+  });
+
   it('cross-agent-group guard: origin session belonging to wrong agent group is rejected', async () => {
     // Third agent group C sends to B, stamping source_session_id = SC on B's inbound.
     const C = 'ag-C';
