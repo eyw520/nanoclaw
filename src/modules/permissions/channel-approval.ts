@@ -143,7 +143,9 @@ export async function requestChannelApproval(input: RequestChannelApprovalInput)
     return;
   }
 
-  const agentGroups = getAllAgentGroups();
+  // Exclude cross-VM stand-ins (remote_peer set): they are session-less
+  // placeholders for peer agents on another VM, never a routable local agent.
+  const agentGroups = getAllAgentGroups().filter((g) => !g.remote_peer);
   if (agentGroups.length === 0) {
     log.warn('Channel registration skipped — no agent groups configured. Run /init-first-agent.', {
       messagingGroupId,

@@ -293,6 +293,16 @@ async function deliverMessage(
     if (!hasTable(getDb(), 'agent_destinations')) {
       throw new Error(`agent-to-agent module not installed — cannot route message ${msg.id}`);
     }
+    // Cross-VM: if the target is a stand-in for a peer on another VM
+    // (remote_peer set), ship it over the bridge instead of routing locally.
+    // A throw here lands in the same retry/backoff/dead-letter path as a
+    // local route failure. NULL remote_peer (every real group) → local route.
+    const target = msg.platform_id ? getAgentGroup(msg.platform_id) : undefined;
+    if (target?.remote_peer) {
+      const { routeRemoteAgentMessage } = await import('./modules/a2a-bridge/send.js');
+      await routeRemoteAgentMessage(msg, session);
+      return;
+    }
     const { routeAgentMessage } = await import('./modules/agent-to-agent/agent-route.js');
     await routeAgentMessage(msg, session);
     return;

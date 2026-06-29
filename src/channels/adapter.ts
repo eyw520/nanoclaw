@@ -18,6 +18,15 @@ export interface ChannelSetup {
    */
   onInboundEvent(event: InboundEvent): void | Promise<void>;
 
+  /**
+   * Called by the CLI admin transport when it receives a cross-VM a2a bridge
+   * frame (`{a2a:{…}}`). Routes into the a2a-bridge receive path, which writes
+   * a proper `channel_type='agent'` inbound — something the normal
+   * `onInboundEvent` (messaging-group routing) cannot produce. Optional: only
+   * the CLI adapter emits it, and only when a bridge frame arrives.
+   */
+  onA2aInbound?(frame: unknown): void | Promise<void>;
+
   /** Called when the adapter discovers metadata about a conversation. */
   onMetadata(platformId: string, name?: string, isGroup?: boolean): void;
 

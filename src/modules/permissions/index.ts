@@ -353,7 +353,8 @@ async function handleChannelApprovalResponse(payload: ResponsePayload): Promise<
     const adapter = getDeliveryAdapter();
     if (!adapter) return true;
 
-    const agentGroups = getAllAgentGroups();
+    // Exclude cross-VM stand-ins (remote_peer set) — not routable local agents.
+    const agentGroups = getAllAgentGroups().filter((g) => !g.remote_peer);
     const options = buildAgentSelectionOptions(agentGroups, approverId);
     const title = '📋 Choose an agent';
     updatePendingChannelApprovalCard(row.messaging_group_id, title, JSON.stringify(options));

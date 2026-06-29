@@ -13,7 +13,12 @@ CREATE TABLE agent_groups (
   name             TEXT NOT NULL,
   folder           TEXT NOT NULL UNIQUE,
   agent_provider   TEXT,
-  created_at       TEXT NOT NULL
+  created_at       TEXT NOT NULL,
+  -- NULL on every real, runnable group. Non-NULL marks a session-less
+  -- "stand-in" for a peer agent group on ANOTHER VM (the value is the peer
+  -- name); the host ships its a2a messages over the cross-VM bridge instead
+  -- of routing locally, and never spawns/sweeps it. See migration 018.
+  remote_peer      TEXT
 );
 
 -- Platform groups/channels. unknown_sender_policy governs what happens
@@ -147,6 +152,17 @@ CREATE TABLE pending_sender_approvals (
   approver_user_id   TEXT NOT NULL,
   created_at         TEXT NOT NULL,
   UNIQUE(messaging_group_id, sender_identity)
+);
+
+-- Cross-VM a2a reply-affinity bridge. For every a2a message this box sends
+-- over the bridge, maps the wire msg_id -> the originating local session, so
+-- a peer's reply (in_reply_to = that msg_id) lands back in the exact session.
+-- Empty unless a cross-VM peer is configured. See migration 018.
+CREATE TABLE a2a_outbound_correlation (
+  msg_id            TEXT PRIMARY KEY,
+  source_session_id TEXT NOT NULL,
+  peer              TEXT NOT NULL,
+  created_at        TEXT NOT NULL
 );
 `;
 

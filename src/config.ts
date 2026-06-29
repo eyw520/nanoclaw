@@ -15,6 +15,8 @@ const envConfig = readEnvFile([
   'NANOCLAW_DM_THREAD_PER_MESSAGE',
   'CONTAINER_CEILING_MS',
   'MAX_CONCURRENT_CONTAINERS',
+  'A2A_BRIDGE_ENDPOINT',
+  'A2A_SELF_PEER',
 ]);
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -76,6 +78,18 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
 // Operators opt in: CONTAINER_CPU_LIMIT=2, CONTAINER_MEMORY_LIMIT=8g.
 export const CONTAINER_CPU_LIMIT = process.env.CONTAINER_CPU_LIMIT || '';
 export const CONTAINER_MEMORY_LIMIT = process.env.CONTAINER_MEMORY_LIMIT || '';
+
+// Cross-VM a2a bridge (see src/modules/a2a-bridge). Both empty by default →
+// the bridge is fully inert (no group is ever marked remote_peer without eva
+// also setting these, and the send path no-ops/throws if the endpoint is
+// unset). MUST read through envConfig like the rest of this file — .env is
+// parsed into envConfig, NOT injected into process.env.
+//   A2A_BRIDGE_ENDPOINT — local URL the host POSTs outbound frames to (eva's
+//     SSH-tunnel ingress, e.g. http://127.0.0.1:<port>).
+//   A2A_SELF_PEER — this box's peer name; received frames whose to_peer differs
+//     are rejected.
+export const A2A_BRIDGE_ENDPOINT = process.env.A2A_BRIDGE_ENDPOINT || envConfig.A2A_BRIDGE_ENDPOINT || '';
+export const A2A_SELF_PEER = process.env.A2A_SELF_PEER || envConfig.A2A_SELF_PEER || '';
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

@@ -18,6 +18,12 @@ export function getAgentGroupByFolder(folder: string): AgentGroup | undefined {
   return getDb().prepare('SELECT * FROM agent_groups WHERE folder = ?').get(folder) as AgentGroup | undefined;
 }
 
+/** The session-less stand-in group representing a given cross-VM peer, if any.
+ *  Used by the a2a bridge to map an inbound frame's `from_peer` → local id. */
+export function getAgentGroupByRemotePeer(peer: string): AgentGroup | undefined {
+  return getDb().prepare('SELECT * FROM agent_groups WHERE remote_peer = ?').get(peer) as AgentGroup | undefined;
+}
+
 export function getAllAgentGroups(): AgentGroup[] {
   return getDb().prepare('SELECT * FROM agent_groups ORDER BY name').all() as AgentGroup[];
 }

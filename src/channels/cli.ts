@@ -185,6 +185,7 @@ function createAdapter(): ChannelAdapter {
       reply_to?: unknown;
       sender?: unknown;
       senderId?: unknown;
+      a2a?: unknown;
     };
     try {
       payload = JSON.parse(line);
@@ -192,6 +193,24 @@ function createAdapter(): ChannelAdapter {
       log.warn('CLI: ignoring non-JSON line from client', { line });
       return;
     }
+
+    // Cross-VM a2a bridge frame (from eva's SSH-tunnel terminator). Routed
+    // into the a2a-bridge receive path, which writes a proper agent inbound —
+    // the normal `to`/onInboundEvent path can't produce a channel_type='agent'
+    // row. Handled before the text guard (the text lives inside `a2a`).
+    if (payload.a2a && typeof payload.a2a === 'object') {
+      if (config.onA2aInbound) {
+        try {
+          await config.onA2aInbound(payload.a2a);
+        } catch (err) {
+          log.error('CLI: onA2aInbound threw', { err });
+        }
+      } else {
+        log.warn('CLI: received a2a frame but no onA2aInbound handler wired');
+      }
+      return;
+    }
+
     if (typeof payload.text !== 'string' || payload.text.length === 0) return;
 
     const to = parseAddress(payload.to);

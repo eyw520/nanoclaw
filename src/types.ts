@@ -7,6 +7,15 @@ export interface AgentGroup {
   /** @deprecated Use container_configs.provider instead. */
   agent_provider: string | null;
   created_at: string;
+  /**
+   * NULL/absent for every real, runnable group. Non-NULL marks a session-less
+   * "stand-in" representing a peer agent group on another VM (value = peer
+   * name); the host bridges its a2a messages cross-VM instead of routing
+   * locally, and never spawns it. See migration 018 / src/modules/a2a-bridge.
+   * Optional in the type (so existing fixtures/literals need no change); real
+   * DB rows always carry the column (NULL when unset) after migration 018.
+   */
+  remote_peer?: string | null;
 }
 
 /** Per-agent-group container runtime config. Source of truth in the DB;

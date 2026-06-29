@@ -127,6 +127,18 @@ async function main(): Promise<void> {
           });
         });
       },
+      onA2aInbound(frame) {
+        // Cross-VM a2a bridge: a peer's frame arrived via the CLI socket
+        // (eva's SSH-tunnel terminator). Inject it as a local agent inbound.
+        import('./modules/a2a-bridge/receive.js')
+          .then(({ receiveRemoteAgentMessage }) => receiveRemoteAgentMessage(frame))
+          .catch((err) => {
+            log.error('Failed to handle inbound a2a bridge frame', {
+              sourceAdapter: adapter.channelType,
+              err,
+            });
+          });
+      },
       onMetadata(platformId, name, isGroup) {
         log.info('Channel metadata discovered', {
           channelType: adapter.channelType,
