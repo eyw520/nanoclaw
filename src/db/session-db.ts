@@ -269,23 +269,84 @@ export function getDueOutboundMessages(db: Database.Database): OutboundMessage[]
 // delivered
 // ---------------------------------------------------------------------------
 
+/**
+ * Ids in a TERMINAL delivery state (delivered or failed) — i.e. that must
+ * never be (re-)delivered. Excludes 'retrying' rows, which are eligible again
+ * once their backoff elapses (see getDeliveryStates / delivery.ts).
+ */
 export function getDeliveredIds(db: Database.Database): Set<string> {
   return new Set(
-    (db.prepare('SELECT message_out_id FROM delivered').all() as Array<{ message_out_id: string }>).map(
-      (r) => r.message_out_id,
-    ),
+    (
+      db.prepare("SELECT message_out_id FROM delivered WHERE status IN ('delivered', 'failed')").all() as Array<{
+        message_out_id: string;
+      }>
+    ).map((r) => r.message_out_id),
+  );
+}
+
+export interface DeliveryState {
+  status: 'delivered' | 'failed' | 'retrying';
+  attempts: number;
+  next_attempt_at: string | null;
+}
+
+/** Full delivery state for every recorded messages_out id in this session. */
+export function getDeliveryStates(db: Database.Database): Map<string, DeliveryState> {
+  const rows = db.prepare('SELECT message_out_id, status, attempts, next_attempt_at FROM delivered').all() as Array<
+    { message_out_id: string } & DeliveryState
+  >;
+  return new Map(
+    rows.map((r) => [r.message_out_id, { status: r.status, attempts: r.attempts, next_attempt_at: r.next_attempt_at }]),
   );
 }
 
 export function markDelivered(db: Database.Database, messageOutId: string, platformMessageId: string | null): void {
+  // UPSERT (not INSERT OR IGNORE): a prior 'retrying' row must transition to
+  // 'delivered' so a late success after retries doesn't leave the message
+  // eligible for re-delivery (which would double-send).
   db.prepare(
-    "INSERT OR IGNORE INTO delivered (message_out_id, platform_message_id, status, delivered_at) VALUES (?, ?, 'delivered', datetime('now'))",
+    `INSERT INTO delivered (message_out_id, platform_message_id, status, attempts, next_attempt_at, delivered_at)
+       VALUES (?, ?, 'delivered', 0, NULL, datetime('now'))
+     ON CONFLICT(message_out_id) DO UPDATE SET
+       platform_message_id = excluded.platform_message_id,
+       status = 'delivered',
+       next_attempt_at = NULL,
+       delivered_at = excluded.delivered_at`,
   ).run(messageOutId, platformMessageId ?? null);
 }
 
+/**
+ * Record a transient failure: bump the persisted attempt count and schedule
+ * the next attempt (absolute ISO time). Non-terminal — the message stays
+ * eligible for re-delivery once next_attempt_at elapses, and survives a host
+ * restart (unlike the old in-memory counter).
+ */
+export function scheduleDeliveryRetry(
+  db: Database.Database,
+  messageOutId: string,
+  attempts: number,
+  nextAttemptAt: string,
+): void {
+  db.prepare(
+    `INSERT INTO delivered (message_out_id, platform_message_id, status, attempts, next_attempt_at, delivered_at)
+       VALUES (?, NULL, 'retrying', ?, ?, datetime('now'))
+     ON CONFLICT(message_out_id) DO UPDATE SET
+       status = 'retrying',
+       attempts = excluded.attempts,
+       next_attempt_at = excluded.next_attempt_at,
+       delivered_at = excluded.delivered_at`,
+  ).run(messageOutId, attempts, nextAttemptAt);
+}
+
+/** Terminal dead-letter: the message is given up on and never re-delivered. */
 export function markDeliveryFailed(db: Database.Database, messageOutId: string): void {
   db.prepare(
-    "INSERT OR IGNORE INTO delivered (message_out_id, platform_message_id, status, delivered_at) VALUES (?, NULL, 'failed', datetime('now'))",
+    `INSERT INTO delivered (message_out_id, platform_message_id, status, attempts, next_attempt_at, delivered_at)
+       VALUES (?, NULL, 'failed', 0, NULL, datetime('now'))
+     ON CONFLICT(message_out_id) DO UPDATE SET
+       status = 'failed',
+       next_attempt_at = NULL,
+       delivered_at = excluded.delivered_at`,
   ).run(messageOutId);
 }
 
@@ -299,6 +360,12 @@ export function migrateDeliveredTable(db: Database.Database): void {
   }
   if (!cols.has('status')) {
     db.prepare("ALTER TABLE delivered ADD COLUMN status TEXT NOT NULL DEFAULT 'delivered'").run();
+  }
+  if (!cols.has('attempts')) {
+    db.prepare('ALTER TABLE delivered ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0').run();
+  }
+  if (!cols.has('next_attempt_at')) {
+    db.prepare('ALTER TABLE delivered ADD COLUMN next_attempt_at TEXT').run();
   }
 }
 

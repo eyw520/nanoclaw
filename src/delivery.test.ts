@@ -156,67 +156,89 @@ describe('deliverSessionMessages — concurrent invocations', () => {
 });
 
 describe('deliverSessionMessages — retry and permanent failure', () => {
-  it('retries on adapter failure and marks failed after MAX_DELIVERY_ATTEMPTS (3)', async () => {
-    seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
-    insertOutbound('ag-1', session.id, 'out-flaky');
+  // Total attempts before dead-lettering — must match MAX_DELIVERY_ATTEMPTS in delivery.ts.
+  const MAX_DELIVERY_ATTEMPTS = 6;
+  // Jump past any per-attempt backoff so the next poll re-attempts immediately.
+  const PAST_BACKOFF_MS = 10 * 60 * 1000;
 
-    let callCount = 0;
-    setDeliveryAdapter({
-      async deliver() {
-        callCount++;
-        throw new Error('network timeout');
-      },
-    });
+  it('retries with exponential backoff and dead-letters after MAX_DELIVERY_ATTEMPTS', async () => {
+    vi.useFakeTimers();
+    try {
+      seedAgentAndChannel();
+      const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+      insertOutbound('ag-1', session.id, 'out-flaky');
 
-    // Attempt 1
-    await deliverSessionMessages(session);
-    expect(callCount).toBe(1);
+      let callCount = 0;
+      setDeliveryAdapter({
+        async deliver() {
+          callCount++;
+          throw new Error('network timeout');
+        },
+      });
 
-    // Attempt 2
-    await deliverSessionMessages(session);
-    expect(callCount).toBe(2);
+      // Each attempt fires only once the prior attempt's backoff has elapsed —
+      // a back-to-back poll within the backoff window is correctly skipped.
+      for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt++) {
+        await deliverSessionMessages(session);
+        expect(callCount).toBe(attempt);
 
-    // Attempt 3 — should mark as permanently failed
-    await deliverSessionMessages(session);
-    expect(callCount).toBe(3);
+        // A second poll before the backoff elapses must NOT re-attempt.
+        await deliverSessionMessages(session);
+        expect(callCount).toBe(attempt);
 
-    // Attempt 4 — message is now in delivered (as failed), adapter not called
-    await deliverSessionMessages(session);
-    expect(callCount).toBe(3);
+        vi.advanceTimersByTime(PAST_BACKOFF_MS);
+      }
 
-    // Verify the message is in the delivered table with 'failed' status
-    const inDb = openInboundDb('ag-1', session.id);
-    const delivered = getDeliveredIds(inDb);
-    inDb.close();
-    expect(delivered.has('out-flaky')).toBe(true);
+      // After the final attempt the message is dead-lettered (terminal) —
+      // further polls never call the adapter again.
+      await deliverSessionMessages(session);
+      expect(callCount).toBe(MAX_DELIVERY_ATTEMPTS);
+
+      const inDb = openInboundDb('ag-1', session.id);
+      const delivered = getDeliveredIds(inDb);
+      inDb.close();
+      expect(delivered.has('out-flaky')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it('clears attempt counter on successful delivery', async () => {
-    seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
-    insertOutbound('ag-1', session.id, 'out-retry-ok');
+  it('recovers when a transient failure clears within the retry window', async () => {
+    vi.useFakeTimers();
+    try {
+      seedAgentAndChannel();
+      const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+      insertOutbound('ag-1', session.id, 'out-retry-ok');
 
-    let callCount = 0;
-    setDeliveryAdapter({
-      async deliver() {
-        callCount++;
-        if (callCount === 1) throw new Error('transient');
-        return 'plat-ok';
-      },
-    });
+      let callCount = 0;
+      setDeliveryAdapter({
+        async deliver() {
+          callCount++;
+          if (callCount === 1) throw new Error('transient');
+          return 'plat-ok';
+        },
+      });
 
-    // Attempt 1 — fails
-    await deliverSessionMessages(session);
-    expect(callCount).toBe(1);
+      // Attempt 1 — fails, schedules a backoff retry
+      await deliverSessionMessages(session);
+      expect(callCount).toBe(1);
 
-    // Attempt 2 — succeeds
-    await deliverSessionMessages(session);
-    expect(callCount).toBe(2);
+      // Poll again before backoff elapses — skipped, not re-attempted
+      await deliverSessionMessages(session);
+      expect(callCount).toBe(1);
 
-    // Attempt 3 — not called, message already delivered
-    await deliverSessionMessages(session);
-    expect(callCount).toBe(2);
+      // Backoff elapses — attempt 2 succeeds
+      vi.advanceTimersByTime(PAST_BACKOFF_MS);
+      await deliverSessionMessages(session);
+      expect(callCount).toBe(2);
+
+      // Now terminal-delivered — a later poll never re-sends
+      vi.advanceTimersByTime(PAST_BACKOFF_MS);
+      await deliverSessionMessages(session);
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -326,10 +348,18 @@ describe('deliverSessionMessages — permission check', () => {
       },
     });
 
-    // Deliver 3 times to exhaust retries
-    await deliverSessionMessages(session);
-    await deliverSessionMessages(session);
-    await deliverSessionMessages(session);
+    // Drive through the full retry window to exhaust attempts. The permission
+    // check throws before the adapter every time, so it's a permanent error
+    // that should dead-letter once attempts run out.
+    vi.useFakeTimers();
+    try {
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        await deliverSessionMessages(session);
+        vi.advanceTimersByTime(10 * 60 * 1000);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
 
     // Adapter never called — permission check throws before reaching it
     expect(calls).toHaveLength(0);

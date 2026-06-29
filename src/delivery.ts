@@ -15,9 +15,10 @@ import { getDb, hasTable } from './db/connection.js';
 import { getMessagingGroup, getMessagingGroupByPlatform } from './db/messaging-groups.js';
 import {
   getDueOutboundMessages,
-  getDeliveredIds,
+  getDeliveryStates,
   markDelivered,
   markDeliveryFailed,
+  scheduleDeliveryRetry,
   migrateDeliveredTable,
 } from './db/session-db.js';
 import { log } from './log.js';
@@ -29,10 +30,22 @@ import type { Session } from './types.js';
 
 const ACTIVE_POLL_MS = 1000;
 const SWEEP_POLL_MS = 60_000;
-const MAX_DELIVERY_ATTEMPTS = 3;
 
-/** Track delivery attempt counts. Resets on process restart (gives failed messages a fresh chance). */
-const deliveryAttempts = new Map<string, number>();
+/**
+ * Outbound delivery retry policy. A transient channel/gateway failure (5xx,
+ * 429, a OneCLI-gateway restart, a brief network/DNS blip) must NOT drop the
+ * agent's reply — that reads to the user as being ignored. So we retry with
+ * exponential backoff, persisted in the `delivered` table, and only give up
+ * (dead-letter, logged loudly) after the full window. Mirrors the inbound
+ * retry machinery in host-sweep.ts (resetStuckProcessingRows).
+ *
+ * 5s · 2^n, capped per-attempt — across MAX attempts the window is ~5min,
+ * long enough to ride out a deploy/gateway bounce, bounded enough that a
+ * genuinely permanent error (e.g. a bad token scope) still dead-letters.
+ */
+const MAX_DELIVERY_ATTEMPTS = 6;
+const BACKOFF_BASE_MS = 5_000;
+const MAX_BACKOFF_MS = 300_000;
 
 /**
  * Sessions whose outbound queue is currently being drained.
@@ -182,19 +195,28 @@ async function drainSession(session: Session): Promise<void> {
     const allDue = getDueOutboundMessages(outDb);
     if (allDue.length === 0) return;
 
-    // Filter out already-delivered messages using inbound.db's delivered table
-    const delivered = getDeliveredIds(inDb);
-    const undelivered = allDue.filter((m) => !delivered.has(m.id));
-    if (undelivered.length === 0) return;
-
-    // Ensure platform_message_id column exists (migration for existing sessions)
+    // Ensure delivery-state columns exist before reading them (migration for
+    // existing sessions), then load the persisted delivery state.
     migrateDeliveredTable(inDb);
+    const states = getDeliveryStates(inDb);
+
+    // Skip terminal rows (delivered/failed) and rows whose retry backoff
+    // hasn't elapsed yet. A 'retrying' row past its next_attempt_at — or one
+    // with no state at all — is eligible. Comparing in JS (not SQL `now`)
+    // keeps the schedule restart- and test-clock-friendly.
+    const now = Date.now();
+    const undelivered = allDue.filter((m) => {
+      const st = states.get(m.id);
+      if (!st) return true;
+      if (st.status !== 'retrying') return false;
+      return !st.next_attempt_at || new Date(st.next_attempt_at).getTime() <= now;
+    });
+    if (undelivered.length === 0) return;
 
     for (const msg of undelivered) {
       try {
         const platformMsgId = await deliverMessage(msg, session, inDb);
         markDelivered(inDb, msg.id, platformMsgId ?? null);
-        deliveryAttempts.delete(msg.id);
 
         // Pause the typing indicator after a real user-facing message
         // lands on the user's screen, so the client has time to visually
@@ -206,23 +228,26 @@ async function drainSession(session: Session): Promise<void> {
           pauseTypingRefreshAfterDelivery(session.id);
         }
       } catch (err) {
-        const attempts = (deliveryAttempts.get(msg.id) ?? 0) + 1;
-        deliveryAttempts.set(msg.id, attempts);
+        const attempts = (states.get(msg.id)?.attempts ?? 0) + 1;
         if (attempts >= MAX_DELIVERY_ATTEMPTS) {
-          log.error('Message delivery failed permanently, giving up', {
+          log.error('Message delivery failed permanently, giving up (dead-letter)', {
             messageId: msg.id,
             sessionId: session.id,
             attempts,
             err,
           });
           markDeliveryFailed(inDb, msg.id);
-          deliveryAttempts.delete(msg.id);
         } else {
-          log.warn('Message delivery failed, will retry', {
+          const backoffMs = Math.min(MAX_BACKOFF_MS, BACKOFF_BASE_MS * 2 ** (attempts - 1));
+          const nextAttemptAt = new Date(Date.now() + backoffMs).toISOString();
+          scheduleDeliveryRetry(inDb, msg.id, attempts, nextAttemptAt);
+          log.warn('Message delivery failed, will retry with backoff', {
             messageId: msg.id,
             sessionId: session.id,
             attempt: attempts,
             maxAttempts: MAX_DELIVERY_ATTEMPTS,
+            backoffMs,
+            nextAttemptAt,
             err,
           });
         }

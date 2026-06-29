@@ -190,10 +190,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_in_series ON messages_in(series_id);
 
 -- Host tracks delivery outcomes for messages_out IDs.
 -- Avoids writing to outbound.db (container-owned).
+--   status ∈ 'delivered' (terminal ok) | 'failed' (terminal dead-letter) |
+--   'retrying' (transient failure, will re-attempt after next_attempt_at).
+-- attempts/next_attempt_at persist the retry schedule so a transient failure
+-- survives a host restart instead of being silently dropped (see delivery.ts).
 CREATE TABLE IF NOT EXISTS delivered (
   message_out_id      TEXT PRIMARY KEY,
   platform_message_id TEXT,
   status              TEXT NOT NULL DEFAULT 'delivered',
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at     TEXT,
   delivered_at        TEXT NOT NULL
 );
 
