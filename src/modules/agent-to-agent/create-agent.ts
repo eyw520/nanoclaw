@@ -165,6 +165,10 @@ async function performCreateAgent(
     folder,
     agent_provider: null,
     created_at: now,
+    // Lineage for cost rollup: inherit the creator's root if it has one (so a
+    // grandchild rolls up to the same top-level agent), else the creator IS the
+    // root. See migration 022 + the audit COST section.
+    root_agent_id: sourceGroup.root_agent_id ?? sourceGroup.id,
   };
   createAgentGroup(newGroup);
   // A subagent inherits its creator's provider. Provider is a DB property; the

@@ -16,6 +16,13 @@ export interface AgentGroup {
    * DB rows always carry the column (NULL when unset) after migration 018.
    */
   remote_peer?: string | null;
+  /**
+   * NULL/absent for a top-level (owner) group. For a Builder/sub-agent it is
+   * the id of the TOPMOST ancestor that spawned the lineage (a grandchild
+   * shares its parent's root). Set once at creation (create-agent.ts) and used
+   * to roll a child's cost up to the agent that owns it. See migration 022.
+   */
+  root_agent_id?: string | null;
 }
 
 /** Per-agent-group container runtime config. Source of truth in the DB;

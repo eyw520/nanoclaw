@@ -187,7 +187,11 @@ function drainSessionUsage(outDb: Database.Database, agentGroupId: string, sessi
     if (!row?.value) return;
     const totals = JSON.parse(row.value) as Record<string, SessionModelTotals>;
     if (!totals || Object.keys(totals).length === 0) return;
-    upsertSessionUsage(agentGroupId, sessionId, totals, new Date().toISOString());
+    // Resolve the rollup root NOW, while the group row still exists — a Builder
+    // may be harvested later, so we can't rely on a query-time join. Top-level
+    // groups have no root_agent_id and bucket under their own id.
+    const root = getAgentGroup(agentGroupId)?.root_agent_id ?? agentGroupId;
+    upsertSessionUsage(agentGroupId, sessionId, totals, new Date().toISOString(), root);
   } catch (err) {
     log.warn('Failed to drain session usage', { sessionId, err });
   }

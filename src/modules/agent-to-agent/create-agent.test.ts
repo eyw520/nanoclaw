@@ -78,6 +78,17 @@ describe('handleCreateAgent — scope-based authorization', () => {
     expect(mockInitGroupFilesystem).toHaveBeenCalledTimes(1);
   });
 
+  it('stamps the creator as the child root_agent_id (cost-rollup lineage)', async () => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+
+    await handleCreateAgent({ name: 'Scout', instructions: 'help' }, SESSION);
+
+    // SESSION.agent_group_id is 'ag-1' and the mock creator has no root of its
+    // own, so the child roots at its creator — that's how a Builder's spend
+    // later rolls up to the agent that spawned it.
+    expect(mockCreateAgentGroup).toHaveBeenCalledWith(expect.objectContaining({ root_agent_id: 'ag-1' }));
+  });
+
   it('child inherits the creator provider (codex parent → codex child)', async () => {
     // A subagent must run on the same authenticated runtime as its creator —
     // on a codex-only install a claude default would 401. Red-on-delete:

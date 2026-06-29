@@ -25,13 +25,16 @@ export function upsertSessionUsage(
   sessionId: string,
   totalsByModel: Record<string, SessionModelTotals>,
   updatedAt: string,
+  /** Topmost ancestor for cost rollup; the caller resolves it while the group
+   *  still exists (harvest-proof). Defaults to the group's own id. */
+  rootAgentId: string = agentGroupId,
 ): void {
   const db = getDb();
   const stmt = db.prepare(
     `INSERT INTO session_usage
        (agent_group_id, session_id, model, input_tokens, output_tokens,
-        cache_read_tokens, cache_creation_tokens, cost_usd, turns, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        cache_read_tokens, cache_creation_tokens, cost_usd, turns, updated_at, root_agent_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(agent_group_id, session_id, model) DO UPDATE SET
        input_tokens          = excluded.input_tokens,
        output_tokens         = excluded.output_tokens,
@@ -39,7 +42,8 @@ export function upsertSessionUsage(
        cache_creation_tokens = excluded.cache_creation_tokens,
        cost_usd              = excluded.cost_usd,
        turns                 = excluded.turns,
-       updated_at            = excluded.updated_at`,
+       updated_at            = excluded.updated_at,
+       root_agent_id         = excluded.root_agent_id`,
   );
   const apply = db.transaction((rows: Array<[string, SessionModelTotals]>) => {
     for (const [model, t] of rows) {
@@ -54,6 +58,7 @@ export function upsertSessionUsage(
         t.costUsd,
         t.turns,
         updatedAt,
+        rootAgentId,
       );
     }
   });
