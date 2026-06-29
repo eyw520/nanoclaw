@@ -33,6 +33,14 @@ vi.mock('../modules/approvals/index.js', () => ({
   requestApproval: vi.fn(),
 }));
 
+// dispatch dynamically imports this for the parent→Builder delete exemption.
+const mockGetDestinationByName = vi.fn();
+vi.mock('../modules/agent-to-agent/db/agent-destinations.js', () => ({
+  getDestinationByName: (...args: unknown[]) => mockGetDestinationByName(...args),
+}));
+
+import { requestApproval } from '../modules/approvals/index.js';
+
 // Register a test command so dispatch has something to find
 import { register } from './registry.js';
 
@@ -60,6 +68,16 @@ register({
   access: 'open',
   parseArgs: (raw) => raw,
   handler: async (args) => ({ echo: args }),
+});
+
+// Approval-gated delete, to exercise the parent→Builder exemption.
+register({
+  name: 'groups-delete',
+  description: 'test command (groups delete, approval-gated)',
+  resource: 'groups',
+  access: 'approval',
+  parseArgs: (raw) => raw,
+  handler: async (args) => ({ deleted: (args as { id?: string }).id }),
 });
 
 register({
@@ -510,5 +528,45 @@ describe('CLI scope enforcement', () => {
       expect(resp.error.code).toBe('forbidden');
       expect(resp.error.message).toContain('not available in group scope');
     }
+  });
+});
+
+describe('approval exemption: a parent retiring its OWN Builder', () => {
+  beforeEach(() => {
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' });
+    mockGetSession.mockReturnValue({ id: 's1', agent_group_id: 'g1' });
+    mockGetAgentGroup.mockReturnValue({ id: 'g1', name: 'Everest' });
+    vi.mocked(requestApproval).mockClear();
+    mockGetDestinationByName.mockReset();
+  });
+
+  it('auto-approves groups-delete when the target Builder calls the requester "parent"', async () => {
+    // create_agent stamps the child with local_name="parent" → creator (g1).
+    mockGetDestinationByName.mockReturnValue({ target_type: 'agent', target_id: 'g1' });
+
+    const resp = await dispatch({ id: '1', command: 'groups-delete', args: { id: 'builder-x' } }, agentCtx());
+
+    expect(mockGetDestinationByName).toHaveBeenCalledWith('builder-x', 'parent');
+    expect(requestApproval).not.toHaveBeenCalled();
+    expect(resp.ok).toBe(true);
+  });
+
+  it('still requires approval when the target has no parent link (e.g. an a2a stand-in or arbitrary group)', async () => {
+    mockGetDestinationByName.mockReturnValue(undefined);
+
+    const resp = await dispatch({ id: '2', command: 'groups-delete', args: { id: 'edge-standin' } }, agentCtx());
+
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(resp.ok).toBe(false);
+    if (!resp.ok) expect(resp.error.code).toBe('approval-pending');
+  });
+
+  it('still requires approval when the parent link points to a DIFFERENT agent', async () => {
+    mockGetDestinationByName.mockReturnValue({ target_id: 'someone-else' });
+
+    const resp = await dispatch({ id: '3', command: 'groups-delete', args: { id: 'not-mine' } }, agentCtx());
+
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(resp.ok).toBe(false);
   });
 });

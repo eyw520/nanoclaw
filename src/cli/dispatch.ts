@@ -102,27 +102,48 @@ export async function dispatch(req: RequestFrame, ctx: CallerContext): Promise<R
   }
 
   if (ctx.caller !== 'host' && cmd.access === 'approval') {
-    const session = getSession(ctx.sessionId);
-    if (!session) {
-      return err(req.id, 'handler-error', 'Session not found.');
+    // Exemption — a parent agent retiring its OWN Builder needs no owner ping.
+    // `create_agent` stamps every child with a `parent` destination pointing
+    // back to its creator, so a `groups-delete` whose target calls THIS agent
+    // "parent" is provably the requester's own child → auto-authorize. Anything
+    // else stays gated: other agents' groups (no such link), a2a stand-ins
+    // (their destination is named for the peer, e.g. "edge"/"everest", not
+    // "parent"), and every non-delete approval command. Best-effort: if the
+    // a2a module/table is absent the lookup throws and we fall through to the
+    // approval prompt (the safe default).
+    let isOwnBuilder = false;
+    if (req.command === 'groups-delete' && typeof req.args.id === 'string') {
+      try {
+        const { getDestinationByName } = await import('../modules/agent-to-agent/db/agent-destinations.js');
+        isOwnBuilder = getDestinationByName(req.args.id, 'parent')?.target_id === ctx.agentGroupId;
+      } catch {
+        isOwnBuilder = false;
+      }
     }
-    const agentGroup = getAgentGroup(ctx.agentGroupId);
-    const agentName = agentGroup?.name ?? ctx.agentGroupId;
 
-    const argSummary = Object.entries(req.args)
-      .map(([k, v]) => `--${k} ${v}`)
-      .join(' ');
+    if (!isOwnBuilder) {
+      const session = getSession(ctx.sessionId);
+      if (!session) {
+        return err(req.id, 'handler-error', 'Session not found.');
+      }
+      const agentGroup = getAgentGroup(ctx.agentGroupId);
+      const agentName = agentGroup?.name ?? ctx.agentGroupId;
 
-    await requestApproval({
-      session,
-      agentName,
-      action: 'cli_command',
-      payload: { frame: { id: req.id, command: req.command, args: req.args } },
-      title: `CLI: ${req.command}`,
-      question: `Agent "${agentName}" wants to run:\n\`ncl ${req.command}${argSummary ? ' ' + argSummary : ''}\``,
-    });
+      const argSummary = Object.entries(req.args)
+        .map(([k, v]) => `--${k} ${v}`)
+        .join(' ');
 
-    return err(req.id, 'approval-pending', 'Approval request sent to admin. You will be notified of the result.');
+      await requestApproval({
+        session,
+        agentName,
+        action: 'cli_command',
+        payload: { frame: { id: req.id, command: req.command, args: req.args } },
+        title: `CLI: ${req.command}`,
+        question: `Agent "${agentName}" wants to run:\n\`ncl ${req.command}${argSummary ? ' ' + argSummary : ''}\``,
+      });
+
+      return err(req.id, 'approval-pending', 'Approval request sent to admin. You will be notified of the result.');
+    }
   }
 
   let parsed: unknown;
