@@ -33,6 +33,7 @@ import { CONTAINER_CEILING_MS } from './config.js';
 import { ensureEgressNetwork } from './egress-lockdown.js';
 import { getActiveSessions } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { upsertSessionUsage, type SessionModelTotals } from './db/session-usage.js';
 import {
   countDueMessages,
   deleteOrphanProcessingClaims,
@@ -171,6 +172,27 @@ async function sweep(): Promise<void> {
   setTimeout(sweep, SWEEP_INTERVAL_MS);
 }
 
+/**
+ * Read the container's cumulative per-model usage from outbound.db
+ * `session_state['usage']` and upsert it into the central `session_usage`
+ * ledger. Host reads outbound.db only — the single-writer invariant holds.
+ * Best-effort: any parse/IO failure is swallowed so metering never disrupts
+ * the sweep (and pre-usage outbound DBs simply have no such row).
+ */
+function drainSessionUsage(outDb: Database.Database, agentGroupId: string, sessionId: string): void {
+  try {
+    const row = outDb.prepare("SELECT value FROM session_state WHERE key = 'usage'").get() as
+      | { value: string }
+      | undefined;
+    if (!row?.value) return;
+    const totals = JSON.parse(row.value) as Record<string, SessionModelTotals>;
+    if (!totals || Object.keys(totals).length === 0) return;
+    upsertSessionUsage(agentGroupId, sessionId, totals, new Date().toISOString());
+  } catch (err) {
+    log.warn('Failed to drain session usage', { sessionId, err });
+  }
+}
+
 async function sweepSession(session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
   if (!agentGroup) return;
@@ -196,6 +218,9 @@ async function sweepSession(session: Session): Promise<void> {
     // 1. Sync processing_ack → messages_in status
     if (outDb) {
       syncProcessingAcks(inDb, outDb);
+      // Drain cost/usage the container accumulated in session_state → central
+      // ledger. Best-effort: metering must never break the sweep.
+      drainSessionUsage(outDb, agentGroup.id, session.id);
     }
 
     // 2. Wake a container if work is due and nothing is running. Ordered

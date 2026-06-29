@@ -6,7 +6,15 @@ import { query as sdkQuery, type HookCallback, type PreCompactHookInput } from '
 
 import { clearContainerToolInFlight, setContainerToolInFlight } from '../db/connection.js';
 import { registerProvider } from './provider-registry.js';
-import type { AgentProvider, AgentQuery, McpServerConfig, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+import type {
+  AgentProvider,
+  AgentQuery,
+  McpServerConfig,
+  ModelTurnUsage,
+  ProviderEvent,
+  ProviderOptions,
+  QueryInput,
+} from './types.js';
 
 function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
@@ -328,6 +336,60 @@ const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WIN
  */
 const STALE_SESSION_RE = /no conversation found|ENOENT.*\.jsonl|session.*not found/i;
 
+/** Flat token usage on the SDK `result` message (snake_case, per Anthropic API). */
+interface SdkUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+/** Per-model usage on the SDK `result` message (camelCase, SDK-computed `costUSD`). */
+interface SdkModelUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  costUSD?: number;
+}
+
+/**
+ * Pull per-model token + cost usage out of the Claude Agent SDK `result`
+ * message. Prefer `modelUsage` (per-model breakdown incl. SDK-computed
+ * `costUSD`); fall back to the flat `usage` + `total_cost_usd` under the
+ * configured model name. Returns undefined when the SDK reports nothing
+ * (e.g. an error subtype before any model call).
+ */
+function extractTurnUsage(
+  m: { total_cost_usd?: number; usage?: SdkUsage; modelUsage?: Record<string, SdkModelUsage> },
+  fallbackModel?: string,
+): ModelTurnUsage[] | undefined {
+  if (m.modelUsage && Object.keys(m.modelUsage).length > 0) {
+    return Object.entries(m.modelUsage).map(([model, u]) => ({
+      model,
+      inputTokens: u.inputTokens ?? 0,
+      outputTokens: u.outputTokens ?? 0,
+      cacheReadTokens: u.cacheReadInputTokens ?? 0,
+      cacheCreationTokens: u.cacheCreationInputTokens ?? 0,
+      costUsd: u.costUSD ?? 0,
+    }));
+  }
+  if (m.usage || m.total_cost_usd !== undefined) {
+    const u = m.usage ?? {};
+    return [
+      {
+        model: fallbackModel ?? 'unknown',
+        inputTokens: u.input_tokens ?? 0,
+        outputTokens: u.output_tokens ?? 0,
+        cacheReadTokens: u.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+        costUsd: m.total_cost_usd ?? 0,
+      },
+    ];
+  }
+  return undefined;
+}
+
 export class ClaudeProvider implements AgentProvider {
   readonly supportsNativeSlashCommands = true;
 
@@ -444,9 +506,16 @@ export class ClaudeProvider implements AgentProvider {
           // (e.g. a non-retryable 403 billing_error) carry their message in
           // `errors[]` instead. Surface either so the poll-loop can deliver a
           // billing/quota notice to the user rather than dropping the turn.
-          const m = message as { result?: string; is_error?: boolean; errors?: string[] };
+          const m = message as {
+            result?: string;
+            is_error?: boolean;
+            errors?: string[];
+            total_cost_usd?: number;
+            usage?: SdkUsage;
+            modelUsage?: Record<string, SdkModelUsage>;
+          };
           const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-          yield { type: 'result', text, isError: m.is_error === true };
+          yield { type: 'result', text, isError: m.is_error === true, usage: extractTurnUsage(m, this.model) };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {

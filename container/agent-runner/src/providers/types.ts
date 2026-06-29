@@ -123,6 +123,22 @@ export interface AgentQuery {
   abort(): void;
 }
 
+/**
+ * Per-model token + cost usage for one completed turn. Providers that expose
+ * billing data (e.g. the Claude Agent SDK's `result` message) populate this so
+ * the agent-runner can meter spend per agent group. One entry per model the
+ * turn touched (a turn usually touches one). `costUsd` is the provider-reported
+ * dollar figure for the turn (authoritative reconciliation is the invoice).
+ */
+export interface ModelTurnUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+}
+
 export type ProviderEvent =
   | { type: 'init'; continuation: string }
   /**
@@ -131,7 +147,7 @@ export type ProviderEvent =
    * poll-loop uses it to surface the result text to the user instead of
    * dropping it as un-wrapped scratchpad, and to skip the re-wrap nudge.
    */
-  | { type: 'result'; text: string | null; isError?: boolean }
+  | { type: 'result'; text: string | null; isError?: boolean; usage?: ModelTurnUsage[] }
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
   | { type: 'progress'; message: string }
   /**
