@@ -457,6 +457,11 @@ export class ClaudeProvider implements AgentProvider {
     stream.push(input.prompt);
 
     const instructions = input.systemContext?.instructions;
+    // Capture instance fields used inside `translateEvents` below. That is a
+    // standalone `async function*` (not an arrow), so `this` is undefined inside
+    // it — referencing `this.model` there throws "undefined is not an object
+    // (evaluating 'this.model')" on every result event. Close over a local.
+    const model = this.model;
 
     const sdkResult = sdkQuery({
       prompt: stream,
@@ -515,7 +520,7 @@ export class ClaudeProvider implements AgentProvider {
             modelUsage?: Record<string, SdkModelUsage>;
           };
           const text = m.result ?? (m.errors && m.errors.length > 0 ? m.errors.join('\n') : null);
-          yield { type: 'result', text, isError: m.is_error === true, usage: extractTurnUsage(m, this.model) };
+          yield { type: 'result', text, isError: m.is_error === true, usage: extractTurnUsage(m, model) };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {
