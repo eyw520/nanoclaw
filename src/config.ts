@@ -14,6 +14,7 @@ const envConfig = readEnvFile([
   'TZ',
   'NANOCLAW_DM_THREAD_PER_MESSAGE',
   'CONTAINER_CEILING_MS',
+  'MAX_CONCURRENT_CONTAINERS',
 ]);
 
 export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Andy';
@@ -61,7 +62,15 @@ export const CONTAINER_CEILING_MS = parseInt(
   process.env.CONTAINER_CEILING_MS || envConfig.CONTAINER_CEILING_MS || String(30 * 60 * 1000),
   10,
 );
-export const MAX_CONCURRENT_CONTAINERS = Math.max(1, parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5);
+// Global concurrent-container cap (enforced in wakeContainer). MUST read through
+// envConfig like CONTAINER_CEILING_MS above — .env is parsed into envConfig, NOT
+// injected into process.env, so a process.env-only read silently defaults to 5 and
+// the cap appears stuck at 5 regardless of .env (which deadlocks a busy box: 5 slots
+// jam, every due wake defers forever). Default 5.
+export const MAX_CONCURRENT_CONTAINERS = Math.max(
+  1,
+  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || envConfig.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
+);
 // Per-container resource caps, passed through to `docker run`. Default empty =
 // no flag added = today's unbounded behavior (don't OOM existing OSS workloads).
 // Operators opt in: CONTAINER_CPU_LIMIT=2, CONTAINER_MEMORY_LIMIT=8g.
