@@ -11,8 +11,8 @@ import type { Migration } from './index.js';
  * here as a JSON map injected via `-e KEY=VALUE` at spawn. Stripped from the
  * materialized container.json so values never land on disk in the group folder.
  */
-export const migration017: Migration = {
-  version: 17,
+export const migration019: Migration = {
+  version: 19,
   name: 'container-env-vars',
   up(db: Database.Database) {
     db.exec(`ALTER TABLE container_configs ADD COLUMN env_vars TEXT NOT NULL DEFAULT '{}';`);

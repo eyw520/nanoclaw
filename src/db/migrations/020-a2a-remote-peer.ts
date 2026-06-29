@@ -22,8 +22,8 @@ import type { Migration } from './index.js';
  *    back referencing that `msg_id` (as `in_reply_to`), this box resolves it
  *    to the exact originating session — preserving reply-affinity across VMs.
  */
-export const migration018: Migration = {
-  version: 18,
+export const migration020: Migration = {
+  version: 20,
   name: 'a2a-remote-peer',
   up(db: Database.Database) {
     db.exec(`ALTER TABLE agent_groups ADD COLUMN remote_peer TEXT;`);
