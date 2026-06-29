@@ -17,6 +17,7 @@ import {
   CONTAINER_MEMORY_LIMIT,
   DATA_DIR,
   GROUPS_DIR,
+  MAX_CONCURRENT_CONTAINERS,
   ONECLI_API_KEY,
   ONECLI_URL,
   TIMEZONE,
@@ -164,6 +165,21 @@ export function wakeContainer(session: Session): Promise<boolean> {
   if (activeContainers.has(session.id)) {
     log.debug('Container already running', { sessionId: session.id });
     return Promise.resolve(true);
+  }
+  // Global concurrency cap. At capacity, DEFER rather than spawn: returning false
+  // leaves the inbound row pending, so the host-sweep retries on its next tick once
+  // a slot frees (same contract as a transient spawn failure). This is the single
+  // chokepoint for every spawn path (router, host-sweep, restart), so one gate here
+  // bounds the whole box. Without it the cap is dead config — the box over-subscribes
+  // (e.g. 13 containers vs a nominal 5), they thrash and hit the ceiling, and threads
+  // are lost. Excess work queues instead.
+  if (activeContainers.size >= MAX_CONCURRENT_CONTAINERS) {
+    log.info('At container capacity — deferring wake (host-sweep will retry when a slot frees)', {
+      sessionId: session.id,
+      running: activeContainers.size,
+      cap: MAX_CONCURRENT_CONTAINERS,
+    });
+    return Promise.resolve(false);
   }
   const existing = wakePromises.get(session.id);
   if (existing) {
