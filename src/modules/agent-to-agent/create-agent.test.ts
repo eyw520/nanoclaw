@@ -94,11 +94,23 @@ describe('handleCreateAgent — scope-based authorization', () => {
   });
 
   it('claude creator leaves the child provider unset (built-in default)', async () => {
-    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' }); // no provider
+    mockGetContainerConfig.mockReturnValue({ cli_scope: 'global' }); // no provider/model/image
 
     await handleCreateAgent({ name: 'Scout', instructions: 'help' }, SESSION);
 
-    expect(mockUpdateScalars).not.toHaveBeenCalled();
+    // The child inherits the creator's full runtime (image_tag/model/env/…), so
+    // the scalar write may fire — but a provider-less (claude) creator must
+    // never STAMP a provider on the child; it stays unset so the child uses the
+    // built-in default. (Here every inherited scalar is undefined, so the write
+    // is a no-op — updateContainerConfigScalars skips undefined keys.)
+    expect(mockInitGroupFilesystem).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ provider: undefined }),
+    );
+    expect(mockUpdateScalars).not.toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ provider: expect.anything() }),
+    );
   });
 
   it('group scope (default): requires approval, does NOT create directly', async () => {
