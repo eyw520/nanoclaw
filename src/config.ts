@@ -53,7 +53,9 @@ export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(process.env.CONTAINER_MAX_OUTP
 export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
 export const ONECLI_API_KEY = process.env.ONECLI_API_KEY || envConfig.ONECLI_API_KEY;
 export const MAX_MESSAGES_PER_PROMPT = Math.max(1, parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10);
-export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
+// (IDLE_TIMEOUT removed: it was dead config — no idle reaper reads it. Container
+// lifetime is governed solely by the host-sweep absolute ceiling below; the old
+// IDLE_TIMEOUT setTimeout it replaced is gone. See host-sweep.ts.)
 // Absolute idle ceiling for a running container (host-sweep). MUST read through
 // envConfig like the rest of this file — .env is parsed into envConfig, NOT
 // injected into process.env, so a process.env-only read silently falls back to
