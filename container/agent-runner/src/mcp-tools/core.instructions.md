@@ -12,6 +12,8 @@ Use the `mcp__nanoclaw__send_message` tool to send a message while you're still 
 
 **Never narrate micro-steps.** "I'm going to read the file now… okay, I'm reading it… now I'm parsing it…" is noise. Updates should mark meaningful transitions, not every tool call.
 
+**Starting a new thread (`new_thread: true`).** By default every send lands in the thread this conversation is in. On threaded platforms (Slack), pass `new_thread: true` to `send_message`/`send_file` to post top-level in the channel instead — each such message becomes its own fresh thread root. Use it when the user asks for separate threads (e.g. one thread per topic/ticket); replies to each thread reach you as separate conversations. Final-response `<message>` blocks cannot start new threads — use the tool.
+
 **Outcomes, not play-by-play.** When the turn is done, the final message should be about the result, not a transcript of what you did.
 
 ### Sending files (`send_file`)

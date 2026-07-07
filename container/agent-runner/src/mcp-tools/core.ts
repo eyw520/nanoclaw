@@ -48,9 +48,15 @@ function destinationList(): string {
  * the same channel the session is bound to, the session's thread_id is
  * preserved so replies land in the correct thread. Otherwise thread_id
  * is null (a cross-destination send starts a new conversation).
+ *
+ * `newThread` overrides the thread pin: the message goes out with a null
+ * thread_id even on the session's own channel, so threaded platforms
+ * (e.g. Slack) post it top-level — a fresh thread root instead of a reply
+ * in the current thread. No-op for agent destinations (always unthreaded).
  */
 function resolveRouting(
   to: string | undefined,
+  newThread = false,
 ): { channel_type: string; platform_id: string; thread_id: string | null; resolvedName: string } | { error: string } {
   if (!to) {
     // Default: reply to whatever thread/channel this session is bound to.
@@ -59,7 +65,7 @@ function resolveRouting(
       return {
         channel_type: session.channel_type,
         platform_id: session.platform_id,
-        thread_id: session.thread_id,
+        thread_id: newThread ? null : session.thread_id,
         resolvedName: '(current conversation)',
       };
     }
@@ -85,7 +91,7 @@ function resolveRouting(
     return {
       channel_type: dest.channelType!,
       platform_id: dest.platformId!,
-      thread_id: threadId,
+      thread_id: newThread ? null : threadId,
       resolvedName: to,
     };
   }
@@ -104,6 +110,11 @@ export const sendMessage: McpToolDefinition = {
           description: 'Destination name (e.g., "family", "worker-1"). Optional if you have only one destination.',
         },
         text: { type: 'string', description: 'Message content' },
+        new_thread: {
+          type: 'boolean',
+          description:
+            'Post top-level in the channel (a fresh thread root) instead of replying in the current thread. Only meaningful on threaded platforms like Slack; ignored elsewhere.',
+        },
       },
       required: ['text'],
     },
@@ -112,7 +123,7 @@ export const sendMessage: McpToolDefinition = {
     const text = args.text as string;
     if (!text) return err('text is required');
 
-    const routing = resolveRouting(args.to as string | undefined);
+    const routing = resolveRouting(args.to as string | undefined, args.new_thread === true);
     if ('error' in routing) return err(routing.error);
 
     const id = generateId();
@@ -142,6 +153,11 @@ export const sendFile: McpToolDefinition = {
         path: { type: 'string', description: 'File path (relative to /workspace/agent/ or absolute)' },
         text: { type: 'string', description: 'Optional accompanying message' },
         filename: { type: 'string', description: 'Display name (default: basename of path)' },
+        new_thread: {
+          type: 'boolean',
+          description:
+            'Post top-level in the channel (a fresh thread root) instead of replying in the current thread. Only meaningful on threaded platforms like Slack; ignored elsewhere.',
+        },
       },
       required: ['path'],
     },
@@ -150,7 +166,7 @@ export const sendFile: McpToolDefinition = {
     const filePath = args.path as string;
     if (!filePath) return err('path is required');
 
-    const routing = resolveRouting(args.to as string | undefined);
+    const routing = resolveRouting(args.to as string | undefined, args.new_thread === true);
     if ('error' in routing) return err(routing.error);
 
     const resolvedPath = path.isAbsolute(filePath) ? filePath : path.resolve('/workspace/agent', filePath);
