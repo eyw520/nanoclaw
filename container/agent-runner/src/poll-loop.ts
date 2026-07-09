@@ -342,6 +342,16 @@ export async function processQuery(
   // doesn't implement `onExchangeComplete`.
   const archivePrompts: string[] = [initialPrompt];
 
+  // Follow-up message ids pushed into the active query that haven't seen a
+  // `result` event yet — completed on the next result. Completion must NOT
+  // happen at push time (see the push site below): a result can still arrive
+  // for a turn that started before the push (the model was mid-turn when the
+  // push landed), so completing on the next result accepts a small race —
+  // but the loss window shrinks from "any hang/kill after push" to "crash
+  // inside that sub-turn race", and the SDK transcript already carries the
+  // pushed prompt for the resumed session either way.
+  const pushedAwaitingResult: string[] = [];
+
   // Concurrent polling: push follow-ups into the active query as they arrive.
   // We do NOT force-end the stream on silence — keeping the query open avoids
   // re-spawning the SDK subprocess (~few seconds) and re-loading the .jsonl
@@ -421,7 +431,16 @@ export async function processQuery(
         unwrappedNudged = false;
         query.push(prompt);
         archivePrompts.push(prompt);
-        markCompleted(keptIds);
+        // Stay in 'processing' until the query produces a result. Completing
+        // here recorded the messages as handled the moment they entered the
+        // SDK stream — if the query then hung, or the container was killed
+        // mid-turn, they were silently swallowed with nothing left for the
+        // host sweep to retry (a user-facing thread drops dead). While
+        // 'processing' they remain covered by the host's claim-stuck rule
+        // (claim past tolerance with no heartbeat since the claim → kill +
+        // reset to pending) and by clearStaleProcessingAcks() on the next
+        // container's startup.
+        pushedAwaitingResult.push(...keptIds);
       } catch (err) {
         // Without this catch the rejection escapes the void IIFE and Node
         // terminates the container on unhandled-rejection. The initial-batch
@@ -485,6 +504,12 @@ export async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
+        // Same for any follow-ups pushed into the query before this result:
+        // the turn that consumed (or will next consume) them has signs of
+        // life, so they're no longer at risk of being silently swallowed.
+        if (pushedAwaitingResult.length > 0) {
+          markCompleted(pushedAwaitingResult.splice(0));
+        }
         if (event.text) {
           const { sent, hasUnwrapped } = dispatchResultText(event.text, routing);
           if (sent === 0 && event.isError === true) {
@@ -540,6 +565,17 @@ export async function processQuery(
   } finally {
     done = true;
     clearInterval(pollHandle);
+    if (pushedAwaitingResult.length > 0) {
+      // Stream ended (error, abort-for-command, or clean end) with pushed
+      // messages that never saw a result. Deliberately left in 'processing':
+      // the host resets them when this container exits, or the next
+      // container's clearStaleProcessingAcks() releases them — either way
+      // they get re-processed instead of silently dropped.
+      log(
+        `Stream ended with ${pushedAwaitingResult.length} pushed message(s) awaiting a result — ` +
+          `left in 'processing' for retry after container exit`,
+      );
+    }
   }
 
   return { continuation: queryContinuation };

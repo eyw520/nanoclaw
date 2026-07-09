@@ -571,6 +571,100 @@ describe('poll loop — slash command during active query', () => {
   });
 });
 
+describe('poll loop — follow-up ack durability', () => {
+  it('keeps a pushed follow-up in processing until a result arrives, then completes it', async () => {
+    insertMessage('m-first', { sender: 'Alice', text: 'kick off' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new HoldingProvider();
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider as unknown as MockProvider, controller.signal, 5000);
+
+    // Initial turn answers immediately — initial batch completes on its result.
+    await waitFor(() => ackStatus('m-first') === 'completed', 2000);
+
+    // A follow-up arrives while the query is open; the loop pushes it into
+    // the active stream.
+    insertMessage('m-follow', { sender: 'Alice', text: 'and this too' }, { platformId: 'chan-1', channelType: 'discord' });
+    await waitFor(() => provider.pushed.length === 1, 2000);
+
+    // No result has arrived for the push yet: the message must still be a
+    // 'processing' claim, NOT 'completed'. Completing at push time is the
+    // bug where a hung/killed query silently swallows the message — a
+    // 'processing' claim stays recoverable (host claim-stuck reset +
+    // clearStaleProcessingAcks on the next container).
+    await sleep(150);
+    expect(ackStatus('m-follow')).toBe('processing');
+
+    // The turn finishes → the pushed message completes.
+    provider.releaseResult('<message to="discord-test">done</message>');
+    await waitFor(() => ackStatus('m-follow') === 'completed', 2000);
+
+    controller.abort();
+    await loopPromise.catch(() => {});
+  });
+});
+
+function ackStatus(id: string): string | undefined {
+  const row = getOutboundDb()
+    .prepare('SELECT status FROM processing_ack WHERE message_id = ?')
+    .get(id) as { status: string } | undefined;
+  return row?.status;
+}
+
+/**
+ * Provider that answers the initial prompt immediately, then HOLDS pushed
+ * follow-ups: no result is emitted for them until the test calls
+ * releaseResult(). Models a long (or hung) turn with a follow-up in flight.
+ */
+class HoldingProvider {
+  readonly supportsNativeSlashCommands = false;
+  pushed: string[] = [];
+  private queue: string[] = [];
+  private wake: (() => void) | null = null;
+  private ended = false;
+
+  isSessionInvalid(): boolean {
+    return false;
+  }
+
+  releaseResult(text: string): void {
+    this.queue.push(text);
+    this.wake?.();
+  }
+
+  query() {
+    const owner = this;
+    return {
+      push(message: string) {
+        owner.pushed.push(message);
+      },
+      end() {
+        owner.ended = true;
+        owner.wake?.();
+      },
+      abort() {
+        owner.ended = true;
+        owner.wake?.();
+      },
+      events: (async function* () {
+        yield { type: 'activity' as const };
+        yield { type: 'init' as const, continuation: 'holding-session' };
+        yield { type: 'result' as const, text: '<message to="discord-test">first answer</message>' };
+        while (!owner.ended) {
+          if (owner.queue.length > 0) {
+            yield { type: 'result' as const, text: owner.queue.shift()! };
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            owner.wake = resolve;
+          });
+          owner.wake = null;
+        }
+      })(),
+    };
+  }
+}
+
 /**
  * Provider whose query never completes until ended/aborted — for testing how
  * the loop interrupts an active stream.
