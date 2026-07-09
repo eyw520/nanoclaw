@@ -1,5 +1,5 @@
 import type { McpServerConfig } from '../../container-config.js';
-import { buildAgentGroupImage, killContainer, wakeContainer } from '../../container-runner.js';
+import { buildAgentGroupImage, isContainerRunning, killContainer, wakeContainer } from '../../container-runner.js';
 import { restartAgentGroupContainers } from '../../container-restart.js';
 import { getDb, hasTable } from '../../db/connection.js';
 import { getSession } from '../../db/sessions.js';
@@ -67,8 +67,10 @@ registerResource({
       access: 'approval',
       description:
         'Delete an agent group and its dependent rows (sessions, destinations, approvals, role grants, ' +
-        'memberships, channel wirings). FK-ordered cascade in a single transaction. ' +
-        'Use --id <group-id>. Out of scope: killing running containers, on-disk cleanup of groups/<folder>/ and data/v2-sessions/<group-id>/.',
+        'memberships, channel wirings). Kills any containers still running for the group first — ' +
+        'otherwise they outlive their session rows, become invisible to the host-sweep reaper, and ' +
+        'hold concurrency slots forever. FK-ordered cascade in a single transaction. ' +
+        'Use --id <group-id>. Out of scope: on-disk cleanup of groups/<folder>/ and data/v2-sessions/<group-id>/.',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -78,6 +80,22 @@ registerResource({
         // genericDelete behaviour of throwing "not found" for unknown IDs.
         const exists = db.prepare('SELECT 1 FROM agent_groups WHERE id = ? LIMIT 1').get(id);
         if (!exists) throw new Error(`group not found: ${id}`);
+
+        // Kill the group's running containers BEFORE the rows disappear.
+        // Once the session rows are gone the host sweep can no longer see
+        // these containers (it iterates active sessions), so this is the
+        // last reliable point to reclaim their concurrency slots. The
+        // orphan reaper in host-sweep is the backstop, not the plan.
+        const sessionRows = db.prepare('SELECT id FROM sessions WHERE agent_group_id = ?').all(id) as Array<{
+          id: string;
+        }>;
+        let killed = 0;
+        for (const { id: sessionId } of sessionRows) {
+          if (isContainerRunning(sessionId)) {
+            killContainer(sessionId, 'group-deleted');
+            killed += 1;
+          }
+        }
 
         const hasAgentDestinations = hasTable(db, 'agent_destinations');
         const hasPendingApprovals = hasTable(db, 'pending_approvals');
@@ -146,7 +164,7 @@ registerResource({
         });
         const removed = cascade(id);
 
-        return { deleted: id, removed };
+        return { deleted: id, containers_killed: killed, removed };
       },
     },
     restart: {

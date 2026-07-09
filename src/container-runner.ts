@@ -145,6 +145,11 @@ export function getActiveContainerCount(): number {
   return activeContainers.size;
 }
 
+/** Session ids with a tracked running container (for the orphan sweep). */
+export function getActiveContainerSessionIds(): string[] {
+  return [...activeContainers.keys()];
+}
+
 export function isContainerRunning(sessionId: string): boolean {
   return activeContainers.has(sessionId);
 }

@@ -31,7 +31,7 @@ import fs from 'fs';
 
 import { CONTAINER_CEILING_MS } from './config.js';
 import { ensureEgressNetwork } from './egress-lockdown.js';
-import { getActiveSessions } from './db/sessions.js';
+import { getActiveSessions, getSession } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { upsertSessionUsage, type SessionModelTotals } from './db/session-usage.js';
 import {
@@ -47,7 +47,7 @@ import {
 } from './db/session-db.js';
 import { log } from './log.js';
 import { openInboundDb, openOutboundDb, openOutboundDbRw, inboundDbPath, heartbeatPath } from './session-manager.js';
-import { isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
+import { getActiveContainerSessionIds, isContainerRunning, killContainer, wakeContainer } from './container-runner.js';
 import type { Session } from './types.js';
 
 /**
@@ -155,6 +155,23 @@ async function sweep(): Promise<void> {
     }
   } catch (err) {
     log.error('Host sweep error', { err });
+  }
+
+  // Orphaned-container reaper. The per-session loop above only sees sessions
+  // that still have a DB row, so a container whose session (or whole agent
+  // group) was deleted mid-run — e.g. a Builder retired via `ncl groups
+  // delete` while its container was still up — is never heartbeat-checked
+  // and would hold a concurrency slot forever. A deleted session row means
+  // the work is disowned: kill immediately rather than waiting out a ceiling.
+  try {
+    for (const sessionId of getActiveContainerSessionIds()) {
+      if (!getSession(sessionId)) {
+        log.warn('Killing container for deleted session', { sessionId });
+        killContainer(sessionId, 'orphaned-session');
+      }
+    }
+  } catch (err) {
+    log.error('Orphan-container sweep failed', { err });
   }
 
   // Finalize any "Reject with reason…" holds whose reply window elapsed (admin
